@@ -26,11 +26,11 @@ st.set_page_config(page_title="Vientiane Home Energy Guard", page_icon="⚡", la
 st.title("⚡ EDL Photo-to-Bill Monitor")
 st.write("Upload a clear photo of your physical meter to instantly check your consumption and projected monthly bill.")
 
-# User Inputs
+# User Inputs (Starting point for the month)
 previous_reading = st.number_input(
     "Enter your starting meter reading (kWh) from the beginning of the month:", 
     min_value=0.0, 
-    value=135000.0,  # Adjusted closer to your actual range
+    value=135000.0,
     step=1.0
 )
 
@@ -45,14 +45,12 @@ if uploaded_file is not None:
         results = reader.readtext(img_np, allowlist="0123456789")
         
         # --- SPATIAL FILTERING ENGINE ---
-        # 1. Find the vertical centers (Y-coordinates) of all detected text blocks
         y_centers = []
         valid_candidates = []
         
         for (bbox, text, confidence) in results:
             clean_text = re.sub(r'[^0-9]', '', text)
             if clean_text and confidence > 0.2:
-                # Calculate the vertical center of this bounding box
                 y_coords = [point[1] for point in bbox]
                 y_center = sum(y_coords) / 4.0
                 y_centers.append(y_center)
@@ -63,77 +61,69 @@ if uploaded_file is not None:
                     "confidence": confidence
                 })
         
-        # 2. Identify the main horizontal row (the row with the most numbers)
-        # We group things that share a similar Y-level
         final_digits = []
         if y_centers:
-            # Sort candidates from left to right based on X-coordinate
             valid_candidates.sort(key=lambda x: x["x_start"])
-            
-            # Find the median Y coordinate of the longest digit blocks
-            # The main meter dials are the most prominent numbers, so their Y level is our baseline
             median_y = np.median(y_centers)
-            
-            # Keep only the numbers that sit close to this main horizontal baseline
-            # This instantly drops the labels underneath because they are lower down (larger Y values)
             y_tolerance = img_np.shape[0] * 0.15 # Allow 15% vertical drift
             
             for item in valid_candidates:
                 if abs(item["y_center"] - median_y) < y_tolerance:
-                    # Ignore the common small labels if they somehow slip through
                     if item["text"] in ["1", "10", "102", "103", "104", "105"]:
                         continue
                     final_digits.append(item["text"])
         
         detected_text = "".join(final_digits)
+
+    # --- AUTOMATED READING RECONSTRUCTION ---
+    current_reading = previous_reading
     
-    # --- INTELLIGENT READING RECONSTRUCTION ---
-    # Since the first digit '1' was in shadow and dropped, we check if the reading
-    # is suddenly way lower than the previous reading. If it is, we automatically
-    # restore the correct leading digit.
-    suggested_value = previous_reading
     if detected_text:
-        raw_val = float(detected_text)
-        
-        # If the detected number is missing the leading digit (e.g. 35978 instead of 135978)
-        if raw_val < previous_reading and len(str(int(raw_val))) < len(str(int(previous_reading))):
-            # Grab the prefix from the previous reading (e.g. "1") and prepend it
-            diff_len = len(str(int(previous_reading))) - len(str(int(raw_val)))
-            prefix = str(int(previous_reading))[:diff_len]
-            corrected_text = prefix + str(int(raw_val))
-            suggested_value = float(corrected_text)
-        else:
-            suggested_value = raw_val
-                    
-    st.success("🤖 Scan Complete!")
-    
-    # Human Override Box
-    current_reading = st.number_input(
-        "Confirm or correct the detected reading below:",
-        min_value=0.0,
-        value=suggested_value,
-        step=1.0,
-    )
-    
-    usage = current_reading - previous_reading
-    
-    if usage < 0:
-        st.error("❌ **Error:** Current reading cannot be less than your starting reading.")
+        try:
+            raw_val = float(detected_text)
+            
+            # Reconstruction logic for missing leading digits (e.g., shadows on the first number)
+            if raw_val < previous_reading and len(str(int(raw_val))) < len(str(int(previous_reading))):
+                diff_len = len(str(int(previous_reading))) - len(str(int(raw_val)))
+                prefix = str(int(previous_reading))[:diff_len]
+                corrected_text = prefix + str(int(raw_val))
+                current_reading = float(corrected_text)
+            else:
+                current_reading = raw_val
+                
+            st.success(f"🤖 Scan Complete! Detected Current Reading: **{current_reading:,.1f} kWh**")
+            
+        except ValueError:
+            st.error("❌ **Error:** Could not process the digits found in the image. Please use a clearer photo.")
+            current_reading = None
     else:
-        projected_kwh = usage * 30 
-        projected_bill = calculate_edl_bill(projected_kwh)
+        st.error("❌ **Error:** No numbers detected on the meter baseline. Please check the lighting and alignment.")
+        current_reading = None
+
+    # --- CALCULATIONS & METRICS ---
+    if current_reading is not None:
+        usage = current_reading - previous_reading
         
-        st.write("---")
-        st.subheader("📊 Consumption & Cost Projections")
-        
-        col1, col2 = st.columns(2)
-        col1.metric("Usage calculated", f"{usage:.1f} kWh")
-        col2.metric("Projected Monthly Bill", f"{projected_bill:,.0f} LAK")
-        
-        if projected_kwh > 150:
-            st.warning(
-                f"⚠️ **High Tariff Bracket Alert!** Your current trend pushes you into EDL's highest pricing Tier 3. "
-                f"Reducing daily usage by just 2 kWh could save you roughly **{projected_bill * 0.18:,.0f} LAK** this month."
+        if usage < 0:
+            st.error(
+                f"❌ **Reading Mismatch:** The scanned reading ({current_reading:,.1f} kWh) is lower than your "
+                f"starting reading ({previous_reading:,.1f} kWh). The photo might be blurry or cut off."
             )
         else:
-            st.success("🎉 **Safe Zone:** Your usage keeps you in the lower, heavily subsidized EDL pricing tiers.")
+            projected_kwh = usage * 30 
+            projected_bill = calculate_edl_bill(projected_kwh)
+            
+            st.write("---")
+            st.subheader("📊 Consumption & Cost Projections")
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Calculated Usage", f"{usage:.1f} kWh")
+            col2.metric("Projected Monthly Bill", f"{projected_bill:,.0f} LAK")
+            
+            if projected_kwh > 150:
+                st.warning(
+                    f"⚠️ **High Tariff Bracket Alert!** Your current trend pushes you into EDL's highest pricing Tier 3. "
+                    f"Reducing daily usage by just 2 kWh could save you roughly **{projected_bill * 0.18:,.0f} LAK** this month."
+                )
+            else:
+                st.success("🎉 **Safe Zone:** Your usage keeps you in the lower, heavily subsidized EDL pricing tiers.")
