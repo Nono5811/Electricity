@@ -53,32 +53,39 @@ if uploaded_file is not None:
         img_np = np.array(image)
         results = reader.readtext(img_np, allowlist="0123456789")
         
-        # Pull out digits
-        detected_text = ""
-        if results:
-            # Sort detected text blocks from left to right to read them in order
-            results.sort(key=lambda x: x[0][0][0])
-            detected_text = "".join([text for (_, text, _) in results if text.isdigit()])
+        # --- THE FIX: Filter by the physically largest text block ---
+        best_text = ""
+        max_height = 0
+        
+        for (bbox, text, confidence) in results:
+            clean_text = re.sub(r'[^0-9]', '', text)
+            if clean_text and confidence > 0.3:
+                # Calculate the height of this specific text block
+                y_coords = [point[1] for point in bbox]
+                height = max(y_coords) - min(y_coords)
+                
+                # We want the text block with the tallest height (the big dials)
+                if height > max_height:
+                    max_height = height
+                    best_text = clean_text
+                    
+    st.info("🤖 **AI Scan Complete.**")
     
-    # --- The Human-in-the-Loop Fix ---
-    st.info("🤖 **AI Scan Complete.** Mechanical rolling dials can sometimes be tricky to read!")
-    
-    # Pre-fill a manual input box with the AI's guess, but let the user change it!
+    # Pre-fill the input with our smart-filtered guess
     current_reading = st.number_input(
         "Confirm or correct the detected reading below:",
         min_value=0.0,
-        value=float(detected_text) if (detected_text and detected_text.replace('.','',1).isdigit()) else previous_reading,
+        value=float(best_text) if best_text else previous_reading,
         step=1.0
     )
     
-    # Calculate consumption based on the CONFIRMED number
+    # Calculate consumption
     usage = current_reading - previous_reading
     
     if usage < 0:
         st.error("Error: Current reading cannot be less than your starting reading.")
     else:
-        # Proceed with your EDL progressive tariff calculations
-        projected_kwh = usage * 30  # Adjust scaling based on your test tracking window
+        projected_kwh = usage * 30 
         projected_bill = calculate_edl_bill(projected_kwh)
         
         st.write("---")
