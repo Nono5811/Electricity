@@ -4,23 +4,15 @@ from PIL import Image
 import numpy as np
 import re
 
-# 1. Initialize the OCR Reader (English & Numbers)
-# This downloads a lightweight computer vision model on the very first run.
+# 1. Initialize the OCR Reader
 @st.cache_resource
 def load_ocr_reader():
     return easyocr.Reader(['en'])
 
 reader = load_ocr_reader()
 
-# 2. EDL Progressive Tariff Calculation Logic (Laos Household Pricing)
+# 2. EDL Progressive Tariff Calculation Logic
 def calculate_edl_bill(kwh):
-    """
-    Calculates the monthly residential bill in LAK based on EDL progressive tiers.
-    Adjust these rates easily if EDL updates their pricing.
-    - Tier 1: 0 - 25 kWh @ 679 LAK/kWh
-    - Tier 2: 26 - 150 kWh @ 850 LAK/kWh
-    - Tier 3: 151+ kWh @ 1,900 LAK/kWh (Expensive bracket)
-    """
     if kwh <= 25:
         return kwh * 679
     elif kwh <= 150:
@@ -28,88 +20,106 @@ def calculate_edl_bill(kwh):
     else:
         return (25 * 679) + (125 * 850) + ((kwh - 150) * 1900)
 
-# --- STREAMLIT USER INTERFACE ---
+# --- STREAMLIT UI ---
 st.set_page_config(page_title="Vientiane Home Energy Guard", page_icon="⚡", layout="centered")
 
 st.title("⚡ EDL Photo-to-Bill Monitor")
 st.write("Upload a clear photo of your physical meter to instantly check your consumption and projected monthly bill.")
 
-st.info("💡 **How it works:** Taking a photo of the meter tracks 100% of your home's usage safely, avoiding the blind spots of cheap smart plugs!")
-
-# 3. User Inputs
+# User Inputs
 previous_reading = st.number_input(
     "Enter your starting meter reading (kWh) from the beginning of the month:", 
     min_value=0.0, 
-    value=13500.0,  # Pre-filled close to your real meter reading for easy testing
-    step=1.0,
-    help="Check your last paper EDL bill to find your starting number."
+    value=135000.0,  # Adjusted closer to your actual range
+    step=1.0
 )
 
 uploaded_file = st.file_uploader("📸 Take or upload a photo of your physical meter:", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # Open and display the uploaded image
     image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded Meter Image", use_container_width=True)
     
-    with st.spinner("🤖 Processing dials... Cleaning up meter noise..."):
-        # Convert PIL Image to a NumPy array for EasyOCR processing
+    with st.spinner("🤖 Processing dials... Filtering background noise..."):
         img_np = np.array(image)
         results = reader.readtext(img_np, allowlist="0123456789")
         
-        valid_digits = []
-        # Sort detected text blocks from left to right to read digits in correct visual order
-        results.sort(key=lambda x: x[0][0][0])
+        # --- SPATIAL FILTERING ENGINE ---
+        # 1. Find the vertical centers (Y-coordinates) of all detected text blocks
+        y_centers = []
+        valid_candidates = []
         
         for (bbox, text, confidence) in results:
             clean_text = re.sub(r'[^0-9]', '', text)
-            
-            # --- THE CLEANUP FILTER ---
-            # Ignore standard mechanical printed labels, multipliers, and subscripts printed on physical meters
-            if clean_text in ["1", "10", "102", "103", "104", "105", "100"]:
-                continue
-                
-            # Keep digits we are highly confident are part of the actual rolling dial
-            if clean_text and confidence > 0.25:
-                valid_digits.append(clean_text)
+            if clean_text and confidence > 0.2:
+                # Calculate the vertical center of this bounding box
+                y_coords = [point[1] for point in bbox]
+                y_center = sum(y_coords) / 4.0
+                y_centers.append(y_center)
+                valid_candidates.append({
+                    "text": clean_text,
+                    "y_center": y_center,
+                    "x_start": bbox[0][0],
+                    "confidence": confidence
+                })
         
-        # Combine the clean isolated digits into one string
-        detected_text = "".join(valid_digits)
+        # 2. Identify the main horizontal row (the row with the most numbers)
+        # We group things that share a similar Y-level
+        final_digits = []
+        if y_centers:
+            # Sort candidates from left to right based on X-coordinate
+            valid_candidates.sort(key=lambda x: x["x_start"])
+            
+            # Find the median Y coordinate of the longest digit blocks
+            # The main meter dials are the most prominent numbers, so their Y level is our baseline
+            median_y = np.median(y_centers)
+            
+            # Keep only the numbers that sit close to this main horizontal baseline
+            # This instantly drops the labels underneath because they are lower down (larger Y values)
+            y_tolerance = img_np.shape[0] * 0.15 # Allow 15% vertical drift
+            
+            for item in valid_candidates:
+                if abs(item["y_center"] - median_y) < y_tolerance:
+                    # Ignore the common small labels if they somehow slip through
+                    if item["text"] in ["1", "10", "102", "103", "104", "105"]:
+                        continue
+                    final_digits.append(item["text"])
+        
+        detected_text = "".join(final_digits)
     
-    # --- SMART DECIMAL SCALING FOR MECHANICAL DIALS ---
-    # Since your physical meter reads whole numbers and decimals together (e.g., 135978)
-    # we automatically check and scale down numbers that look 10x or 100x larger than previous inputs.
+    # --- INTELLIGENT READING RECONSTRUCTION ---
+    # Since the first digit '1' was in shadow and dropped, we check if the reading
+    # is suddenly way lower than the previous reading. If it is, we automatically
+    # restore the correct leading digit.
     suggested_value = previous_reading
     if detected_text:
         raw_val = float(detected_text)
-        # If the reading is impossibly high compared to previous entry, shift decimal to the left
-        if raw_val > (previous_reading * 5):
-            suggested_value = round(raw_val / 10.0, 1)
-            # Apply secondary shift for extreme OCR misreads (like reading the visual labels)
-            if suggested_value > (previous_reading * 5):
-                suggested_value = round(suggested_value / 10.0, 1)
+        
+        # If the detected number is missing the leading digit (e.g. 35978 instead of 135978)
+        if raw_val < previous_reading and len(str(int(raw_val))) < len(str(int(previous_reading))):
+            # Grab the prefix from the previous reading (e.g. "1") and prepend it
+            diff_len = len(str(int(previous_reading))) - len(str(int(raw_val)))
+            prefix = str(int(previous_reading))[:diff_len]
+            corrected_text = prefix + str(int(raw_val))
+            suggested_value = float(corrected_text)
         else:
             suggested_value = raw_val
                     
     st.success("🤖 Scan Complete!")
     
-    # --- HUMAN-IN-THE-LOOP OVERRIDE ---
-    # Pre-fills with the AI's smart filtered guess, but gives the user a box to instantly make a quick fix
+    # Human Override Box
     current_reading = st.number_input(
         "Confirm or correct the detected reading below:",
         min_value=0.0,
         value=suggested_value,
-        step=0.1,
-        help="Adjust this number if the rolling mechanical dials confused the camera scanner."
+        step=1.0,
     )
     
-    # 4. Calculation & Dashboard Display
     usage = current_reading - previous_reading
     
     if usage < 0:
-        st.error("❌ **Error:** Current reading cannot be less than your starting reading. Please check your inputs.")
+        st.error("❌ **Error:** Current reading cannot be less than your starting reading.")
     else:
-        # Assuming typical consumption rates to calculate a 30-day billing estimate
         projected_kwh = usage * 30 
         projected_bill = calculate_edl_bill(projected_kwh)
         
@@ -120,12 +130,10 @@ if uploaded_file is not None:
         col1.metric("Usage calculated", f"{usage:.1f} kWh")
         col2.metric("Projected Monthly Bill", f"{projected_bill:,.0f} LAK")
         
-        # Actionable local EDL warning advice
         if projected_kwh > 150:
             st.warning(
-                f"⚠️ **High Tariff Bracket Alert!** Your current trend pushes you into EDL's highest pricing Tier 3 "
-                f"(1,900 LAK/kWh). Shaving off just 2 kWh of usage per day could save you "
-                f"roughly **{projected_bill * 0.18:,.0f} LAK** on your next bill."
+                f"⚠️ **High Tariff Bracket Alert!** Your current trend pushes you into EDL's highest pricing Tier 3. "
+                f"Reducing daily usage by just 2 kWh could save you roughly **{projected_bill * 0.18:,.0f} LAK** this month."
             )
         else:
             st.success("🎉 **Safe Zone:** Your usage keeps you in the lower, heavily subsidized EDL pricing tiers.")
