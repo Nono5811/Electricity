@@ -53,29 +53,32 @@ if uploaded_file is not None:
         img_np = np.array(image)
         results = reader.readtext(img_np, allowlist="0123456789")
         
-        # --- THE FIX: Filter by the physically largest text block ---
-        best_text = ""
-        max_height = 0
+        # --- THE FIX: Filter out known EDL meter subscript noise ---
+        valid_digits = []
+        
+        # Sort detected blocks from left to right so we read the dials in order
+        results.sort(key=lambda x: x[0][0][0])
         
         for (bbox, text, confidence) in results:
             clean_text = re.sub(r'[^0-9]', '', text)
-            if clean_text and confidence > 0.3:
-                # Calculate the height of this specific text block
-                y_coords = [point[1] for point in bbox]
-                height = max(y_coords) - min(y_coords)
+            
+            # IGNORE common physical meter labels that mess up the reading
+            if clean_text in ["1", "10", "102", "103", "104", "105", "100"]:
+                continue
                 
-                # We want the text block with the tallest height (the big dials)
-                if height > max_height:
-                    max_height = height
-                    best_text = clean_text
+            if clean_text and confidence > 0.25:
+                valid_digits.append(clean_text)
+        
+        # Combine the remaining real dial numbers
+        detected_text = "".join(valid_digits)
                     
     st.info("🤖 **AI Scan Complete.**")
     
-    # Pre-fill the input with our smart-filtered guess
+    # Pre-fill the input box with our smart-filtered guess
     current_reading = st.number_input(
         "Confirm or correct the detected reading below:",
         min_value=0.0,
-        value=float(best_text) if best_text else previous_reading,
+        value=float(detected_text) if detected_text else previous_reading,
         step=1.0
     )
     
@@ -93,4 +96,3 @@ if uploaded_file is not None:
         col1, col2 = st.columns(2)
         col1.metric("Usage calculated", f"{usage:.1f} kWh")
         col2.metric("Projected Monthly Bill", f"{projected_bill:,.0f} LAK")
-        
