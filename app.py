@@ -48,55 +48,42 @@ if uploaded_file is not None:
     image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded Meter Image", use_container_width=True)
     
-    with st.spinner("Parsing numbers from image..."):
+    with st.spinner("Analyzing meter dials..."):
         # Convert PIL Image to a NumPy array for EasyOCR
         img_np = np.array(image)
+        results = reader.readtext(img_np, allowlist="0123456789")
         
-        # Read the text from the image
-        # Using allowlist forces the AI to only look for digits
-        results = reader.readtext(img_np, allowlist="0123456789.")
-        
-        # Extract the largest numeric string found (usually the main meter dial)
-        detected_numbers = []
-        for (bbox, text, confidence) in results:
-            # Clean up the parsed text (keep only numbers and dots)
-            clean_text = re.sub(r'[^0-9.]', '', text)
-            if clean_text and confidence > 0.4:  # Only trust read confidence above 40%
-                detected_numbers.append((float(clean_text), confidence))
-                
-    if detected_numbers:
-        # Grab the detected reading with the highest confidence
-        detected_numbers.sort(key=lambda x: x[1], reverse=True)
-        current_reading = detected_numbers[0][0]
-        
-        st.success(f"🤖 AI Detected Meter Reading: **{current_reading:,.1f} kWh**")
-        
-        # Calculate consumption
-        usage = current_reading - previous_reading
-        
-        if usage < 0:
-            st.error("Error: Detected reading is lower than your starting monthly reading. Please check the image.")
-        else:
-            # Project monthly use based on average daily rates
-            projected_kwh = usage * 30  # Assumes this is a 1-day step, adjust as needed for testing
-            projected_bill = calculate_edl_bill(projected_kwh)
-            
-            # --- DISPLAY DASHBOARD ---
-            st.write("---")
-            st.subheader("📊 Consumption & Cost Projections")
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Usage Since Last Read", f"{usage:.1f} kWh")
-            col2.metric("Projected Monthly Bill", f"{projected_bill:,.0f} LAK")
-            
-            # Warning threshold for the expensive EDL Tier 3 (over 150 kWh)
-            if projected_kwh > 150:
-                st.warning(
-                    f"⚠️ **High Tariff Bracket Alert!** your current trend pushes you into Tier 3 "
-                    f"({1900} LAK/kWh). Reducing daily usage by just 2 kWh could save you "
-                    f"roughly {projected_bill * 0.18:,.0f} LAK this month."
-                )
-            else:
-                st.success("🎉 Safe Zone: Your usage keeps you in the lower, subsidized EDL price tiers.")
+        # Pull out digits
+        detected_text = ""
+        if results:
+            # Sort detected text blocks from left to right to read them in order
+            results.sort(key=lambda x: x[0][0][0])
+            detected_text = "".join([text for (_, text, _) in results if text.isdigit()])
+    
+    # --- The Human-in-the-Loop Fix ---
+    st.info("🤖 **AI Scan Complete.** Mechanical rolling dials can sometimes be tricky to read!")
+    
+    # Pre-fill a manual input box with the AI's guess, but let the user change it!
+    current_reading = st.number_input(
+        "Confirm or correct the detected reading below:",
+        min_value=0.0,
+        value=float(detected_text) if (detected_text and detected_text.replace('.','',1).isdigit()) else previous_reading,
+        step=1.0
+    )
+    
+    # Calculate consumption based on the CONFIRMED number
+    usage = current_reading - previous_reading
+    
+    if usage < 0:
+        st.error("Error: Current reading cannot be less than your starting reading.")
     else:
-        st.error("Could not confidently read digits from the image. Please try taking a closer, clearer photo in better lighting.")
+        # Proceed with your EDL progressive tariff calculations
+        projected_kwh = usage * 30  # Adjust scaling based on your test tracking window
+        projected_bill = calculate_edl_bill(projected_kwh)
+        
+        st.write("---")
+        st.subheader("📊 Cost Projections")
+        col1, col2 = st.columns(2)
+        col1.metric("Usage calculated", f"{usage:.1f} kWh")
+        col2.metric("Projected Monthly Bill", f"{projected_bill:,.0f} LAK")
+        
