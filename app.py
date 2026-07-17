@@ -136,18 +136,17 @@ if uploaded_file is not None:
         
         final_digits = []
         if y_centers:
-            # Group text pieces moving from left to right
             valid_candidates.sort(key=lambda x: x["x_start"])
-            
-            # Find the baseline row where the actual dial digits rest
             median_y = np.median(y_centers)
-            y_tolerance = processed_img_np.shape[0] * 0.12 # Tightened to ignore rows above/below dials
+            y_tolerance = processed_img_np.shape[0] * 0.12 
             
             for item in valid_candidates:
                 if abs(item["y_center"] - median_y) < y_tolerance:
                     final_digits.append(item["text"])
         
-        detected_text = "".join(final_digits)
+        # Combine everything and force pull exactly the first 6 digits to drop trailing dial ticks
+        raw_combined = "".join(final_digits)
+        detected_text = raw_combined[:6]
 
     # --- READING EVALUATION ---
     current_reading = None
@@ -188,16 +187,4 @@ if uploaded_file is not None:
             else:
                 st.success("🎉 **Safe Zone:** Lower subsidized EDL pricing tiers.")
 
-final_digits = []
-        if y_centers:
-            valid_candidates.sort(key=lambda x: x["x_start"])
-            median_y = np.median(y_centers)
-            y_tolerance = processed_img_np.shape[0] * 0.12 
-            
-            for item in valid_candidates:
-                if abs(item["y_center"] - median_y) < y_tolerance:
-                    final_digits.append(item["text"])
-        
-        # Combine everything and force pull exactly the first 6 digits to drop trailing dial ticks
-        raw_combined = "".join(final_digits)
-        detected_text = raw_combined[:6]
+
