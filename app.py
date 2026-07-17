@@ -37,8 +37,7 @@ def preprocess_image(image):
     # Force inversion to make the dial box white and numbers black
     thresh = cv2.bitwise_not(thresh)
     
-    # --- AUTOMATIC METER BOX CROPPING ---
-    # Find all white structures (contours) in the inverted image
+    # --- AUTOMATIC METER BOX CROPPING & BORDER CLEANING ---
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     best_box = None
@@ -50,26 +49,27 @@ def preprocess_image(image):
         area = w * h
         aspect_ratio = w / float(h)
         
-        # Look for a wide horizontal box in the middle 80% of the image
         if aspect_ratio > 3.0 and aspect_ratio < 7.0 and w > (img_w * 0.4):
             if area > max_area:
                 max_area = area
                 best_box = (x, y, w, h)
                 
-    # If we successfully isolated the digit box, crop it and pad it
     if best_box:
         x, y, w, h = best_box
-        # Crop exactly to the white box
-        crop = thresh[y:y+h, x:x+w]
         
-        # Add a 15-pixel clean white border around the cropped numbers 
-        # This detaches the '1' from the edge so the OCR can see it clearly
-        padded = cv2.copyMakeBorder(crop, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=255)
+        # 1. Shave off 5% from the borders to completely eliminate the black outer frame lines
+        pad_x = int(w * 0.05)
+        pad_y = int(h * 0.05)
+        
+        # Ensure we don't index outside the image boundaries
+        crop = thresh[y+pad_y : y+h-pad_y, x+pad_x : x+w-pad_x]
+        
+        # 2. Add a clean, generous white border back around the shaved image
+        # This gives the first '1' and the last digit absolute breathing room
+        padded = cv2.copyMakeBorder(crop, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
         return padded
         
-    # Fallback if no clean box contour is found
     return thresh
-
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="Vientiane Home Energy Guard", page_icon="⚡", layout="centered")
 
