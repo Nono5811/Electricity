@@ -56,8 +56,8 @@ def preprocess_image(image):
     if best_box:
         x, y, w, h = best_box
         
-        # Shave off 6% from borders to aggressively eliminate line remnants
-        pad_x = int(w * 0.06)
+        # REDUCED CROP: Drop horizontal shave to 2% so it never cuts into the number 1
+        pad_x = int(w * 0.02)
         pad_y = int(h * 0.06)
         crop = thresh[y+pad_y : y+h-pad_y, x+pad_x : x+w-pad_x]
         
