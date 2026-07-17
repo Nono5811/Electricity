@@ -117,13 +117,20 @@ if uploaded_file is not None:
         valid_candidates = []
         
         for (bbox, text, confidence) in results:
-            clean_text = re.sub(r'[^0-9]', '', text)
+            # 1. Map common visual OCR typos for the number '1' before stripping symbols
+            corrected_text = text.strip()
+            # Replace common characters that look like a mechanical '1'
+            for char in ['!', 'I', 'l', '|', '[', ']', 'i']:
+                corrected_text = corrected_text.replace(char, '1')
             
-            # CRUCIAL FILTER: Ignore the standard meter multiplier text row underneath the dials
+            # 2. Strip out any remaining non-numeric characters
+            clean_text = re.sub(r'[^0-9]', '', corrected_text)
+            
+            # Ignore the standard meter multiplier text row underneath the dials
             if clean_text in ["1", "10", "102", "103", "104", "105", "106"]:
                 continue
                 
-            if clean_text and confidence > 0.20:
+            if clean_text and confidence > 0.15: # Slightly relaxed confidence to capture the corrected '1'
                 y_coords = [point[1] for point in bbox]
                 y_center = sum(y_coords) / 4.0
                 y_centers.append(y_center)
@@ -136,16 +143,20 @@ if uploaded_file is not None:
         
         final_digits = []
         if y_centers:
+            # Force horizontal sorting strictly left-to-right
             valid_candidates.sort(key=lambda x: x["x_start"])
+            
             median_y = np.median(y_centers)
-            y_tolerance = processed_img_np.shape[0] * 0.12 
+            y_tolerance = processed_img_np.shape[0] * 0.15
             
             for item in valid_candidates:
                 if abs(item["y_center"] - median_y) < y_tolerance:
                     final_digits.append(item["text"])
         
-        # Combine everything and force pull exactly the first 6 digits to drop trailing dial ticks
+        # Combine everything into one string
         raw_combined = "".join(final_digits)
+        
+        # Take exactly the first 6 digits to keep the full 135978 readout
         detected_text = raw_combined[:6]
 
     # --- READING EVALUATION ---
