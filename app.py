@@ -1,6 +1,6 @@
 import streamlit as st
 import easyocr
-from PIL import Image
+from PIL import Image, ImageOps
 import numpy as np
 import re
 
@@ -41,7 +41,11 @@ if uploaded_file is not None:
     st.image(image, caption="Uploaded Meter Image", use_container_width=True)
     
     with st.spinner("🤖 Processing dials... Filtering background noise..."):
-        img_np = np.array(image)
+        # Convert to grayscale to boost OCR accuracy on mechanical digits
+        gray_image = ImageOps.grayscale(image)
+        img_np = np.array(gray_image)
+        
+        # Read text from processed image
         results = reader.readtext(img_np, allowlist="0123456789")
         
         # --- SPATIAL FILTERING ENGINE ---
@@ -50,7 +54,8 @@ if uploaded_file is not None:
         
         for (bbox, text, confidence) in results:
             clean_text = re.sub(r'[^0-9]', '', text)
-            if clean_text and confidence > 0.2:
+            # Lowering confidence threshold slightly to catch faint dial numbers
+            if clean_text and confidence > 0.15:
                 y_coords = [point[1] for point in bbox]
                 y_center = sum(y_coords) / 4.0
                 y_centers.append(y_center)
@@ -63,42 +68,33 @@ if uploaded_file is not None:
         
         final_digits = []
         if y_centers:
+            # Sort strictly left-to-right based on image position
             valid_candidates.sort(key=lambda x: x["x_start"])
             median_y = np.median(y_centers)
-            y_tolerance = img_np.shape[0] * 0.15 # Allow 15% vertical drift
+            y_tolerance = img_np.shape[0] * 0.20 # Expanded tolerance to 20% for slightly tilted photos
             
             for item in valid_candidates:
                 if abs(item["y_center"] - median_y) < y_tolerance:
-                    if item["text"] in ["1", "10", "102", "103", "104", "105"]:
-                        continue
+                    # REMOVED: The restrictive filter list that caused numbers to get dropped
                     final_digits.append(item["text"])
         
         detected_text = "".join(final_digits)
 
-    # --- AUTOMATED READING RECONSTRUCTION ---
-    current_reading = previous_reading
+    # --- READING EVALUATION ---
+    current_reading = None
     
     if detected_text:
         try:
-            raw_val = float(detected_text)
-            
-            # Reconstruction logic for missing leading digits (e.g., shadows on the first number)
-            if raw_val < previous_reading and len(str(int(raw_val))) < len(str(int(previous_reading))):
-                diff_len = len(str(int(previous_reading))) - len(str(int(raw_val)))
-                prefix = str(int(previous_reading))[:diff_len]
-                corrected_text = prefix + str(int(raw_val))
-                current_reading = float(corrected_text)
-            else:
-                current_reading = raw_val
-                
+            current_reading = float(detected_text)
             st.success(f"🤖 Scan Complete! Detected Current Reading: **{current_reading:,.1f} kWh**")
             
+            # Show the raw detected string so you can see exactly what the AI found
+            st.info(f"📁 Raw digits pulled directly from image: `{detected_text}`")
+            
         except ValueError:
-            st.error("❌ **Error:** Could not process the digits found in the image. Please use a clearer photo.")
-            current_reading = None
+            st.error("❌ **Error:** Could not parse the numbers found in the image. Please use a clearer photo.")
     else:
-        st.error("❌ **Error:** No numbers detected on the meter baseline. Please check the lighting and alignment.")
-        current_reading = None
+        st.error("❌ **Error:** No numbers detected on the meter baseline. Make sure the numbers are centered and well-lit.")
 
     # --- CALCULATIONS & METRICS ---
     if current_reading is not None:
@@ -107,7 +103,8 @@ if uploaded_file is not None:
         if usage < 0:
             st.error(
                 f"❌ **Reading Mismatch:** The scanned reading ({current_reading:,.1f} kWh) is lower than your "
-                f"starting reading ({previous_reading:,.1f} kWh). The photo might be blurry or cut off."
+                f"starting reading ({previous_reading:,.1f} kWh). "
+                f"If the image only showed the last few digits, you may need to adjust your photo angle."
             )
         else:
             projected_kwh = usage * 30 
