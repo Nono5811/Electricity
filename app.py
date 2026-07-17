@@ -34,10 +34,40 @@ def preprocess_image(image):
     # Apply Otsu's thresholding
     _, thresh = cv2.threshold(filtered, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    # FORCE INVERSION: On Itron meters, the dials are white-on-black.
-    # Inverting here turns the dials into black-on-white text, which EasyOCR reads flawlessly.
+    # Force inversion to make the dial box white and numbers black
     thresh = cv2.bitwise_not(thresh)
+    
+    # --- AUTOMATIC METER BOX CROPPING ---
+    # Find all white structures (contours) in the inverted image
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    best_box = None
+    max_area = 0
+    img_h, img_w = thresh.shape
+    
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        area = w * h
+        aspect_ratio = w / float(h)
         
+        # Look for a wide horizontal box in the middle 80% of the image
+        if aspect_ratio > 3.0 and aspect_ratio < 7.0 and w > (img_w * 0.4):
+            if area > max_area:
+                max_area = area
+                best_box = (x, y, w, h)
+                
+    # If we successfully isolated the digit box, crop it and pad it
+    if best_box:
+        x, y, w, h = best_box
+        # Crop exactly to the white box
+        crop = thresh[y:y+h, x:x+w]
+        
+        # Add a 15-pixel clean white border around the cropped numbers 
+        # This detaches the '1' from the edge so the OCR can see it clearly
+        padded = cv2.copyMakeBorder(crop, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=255)
+        return padded
+        
+    # Fallback if no clean box contour is found
     return thresh
 
 # --- STREAMLIT UI ---
