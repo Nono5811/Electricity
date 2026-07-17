@@ -57,15 +57,29 @@ def preprocess_image(image):
     if best_box:
         x, y, w, h = best_box
         
-        # 1. Shave off 5% from the borders to completely eliminate the black outer frame lines
-        pad_x = int(w * 0.05)
-        pad_y = int(h * 0.05)
-        
-        # Ensure we don't index outside the image boundaries
+        # Shave off 6% from borders to aggressively eliminate line remnants
+        pad_x = int(w * 0.06)
+        pad_y = int(h * 0.06)
         crop = thresh[y+pad_y : y+h-pad_y, x+pad_x : x+w-pad_x]
         
-        # 2. Add a clean, generous white border back around the shaved image
-        # This gives the first '1' and the last digit absolute breathing room
+        # --- NOISE CLEANING ENGINE (Remove stray specks under/around numbers) ---
+        # Invert temporarily to find black components on white background
+        binary_inv = cv2.bitwise_not(crop)
+        n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_inv, connectivity=8)
+        
+        # Create a clean white canvas
+        cleaned_inv = np.zeros_like(binary_inv)
+        
+        # Keep only solid components that look like actual digits (ignoring tiny dots)
+        min_digit_pixel_size = 40 
+        for i in range(1, n_labels):
+            if stats[i, cv2.CC_STAT_AREA] >= min_digit_pixel_size:
+                cleaned_inv[labels == i] = 255
+                
+        # Re-invert back to original format (Black text on White background)
+        crop = cv2.bitwise_not(cleaned_inv)
+        
+        # Add a clean, generous white border back around the shaved image
         padded = cv2.copyMakeBorder(crop, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
         return padded
         
@@ -173,3 +187,17 @@ if uploaded_file is not None:
                 st.warning(f"⚠️ **High Tariff Bracket Alert!** Trend puts you into EDL Tier 3.")
             else:
                 st.success("🎉 **Safe Zone:** Lower subsidized EDL pricing tiers.")
+
+final_digits = []
+        if y_centers:
+            valid_candidates.sort(key=lambda x: x["x_start"])
+            median_y = np.median(y_centers)
+            y_tolerance = processed_img_np.shape[0] * 0.12 
+            
+            for item in valid_candidates:
+                if abs(item["y_center"] - median_y) < y_tolerance:
+                    final_digits.append(item["text"])
+        
+        # Combine everything and force pull exactly the first 6 digits to drop trailing dial ticks
+        raw_combined = "".join(final_digits)
+        detected_text = raw_combined[:6]
