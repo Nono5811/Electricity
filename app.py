@@ -22,21 +22,21 @@ def calculate_edl_bill(kwh):
         return (25 * 679) + (125 * 850) + ((kwh - 150) * 1900)
 
 # --- IMAGE PREPROCESSING ENGINE ---
+# --- IMAGE PREPROCESSING ENGINE ---
 def preprocess_image(image):
     # Convert PIL Image to OpenCV BGR format
     img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Use Bilateral Filter instead of Gaussian to reduce noise while keeping edges sharp
+    # Reduce noise while keeping dial edges sharp
     filtered = cv2.bilateralFilter(gray, 9, 75, 75)
     
-    # Apply Otsu's thresholding to preserve solid text characters instead of making them hollow outlines
+    # Apply Otsu's thresholding
     _, thresh = cv2.threshold(filtered, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    # EasyOCR prefers dark text on a light background. 
-    # If the image is mostly dark, invert it to make text dark on a white background.
-    if np.mean(thresh) < 127:
-        thresh = cv2.bitwise_not(thresh)
+    # FORCE INVERSION: On Itron meters, the dials are white-on-black.
+    # Inverting here turns the dials into black-on-white text, which EasyOCR reads flawlessly.
+    thresh = cv2.bitwise_not(thresh)
         
     return thresh
 
