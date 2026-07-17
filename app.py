@@ -22,7 +22,6 @@ def calculate_edl_bill(kwh):
         return (25 * 679) + (125 * 850) + ((kwh - 150) * 1900)
 
 # --- IMAGE PREPROCESSING ENGINE ---
-# --- IMAGE PREPROCESSING ENGINE ---
 def preprocess_image(image):
     # Convert PIL Image to OpenCV BGR format
     img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -63,20 +62,16 @@ def preprocess_image(image):
         crop = thresh[y+pad_y : y+h-pad_y, x+pad_x : x+w-pad_x]
         
         # --- NOISE CLEANING ENGINE (Remove stray specks under/around numbers) ---
-        # Invert temporarily to find black components on white background
         binary_inv = cv2.bitwise_not(crop)
         n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_inv, connectivity=8)
         
-        # Create a clean white canvas
         cleaned_inv = np.zeros_like(binary_inv)
         
-        # Keep only solid components that look like actual digits (ignoring tiny dots)
         min_digit_pixel_size = 40 
         for i in range(1, n_labels):
             if stats[i, cv2.CC_STAT_AREA] >= min_digit_pixel_size:
                 cleaned_inv[labels == i] = 255
                 
-        # Re-invert back to original format (Black text on White background)
         crop = cv2.bitwise_not(cleaned_inv)
         
         # Add a clean, generous white border back around the shaved image
@@ -84,6 +79,7 @@ def preprocess_image(image):
         return padded
         
     return thresh
+
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="Vientiane Home Energy Guard", page_icon="⚡", layout="centered")
 
@@ -109,8 +105,8 @@ if uploaded_file is not None:
         st.write("🔧 Processed image for OCR:")
         st.image(processed_img_np, caption="Solid Character Binarization", use_container_width=True, channels="GRAY")
         
-        # Scan text
-        results = reader.readtext(processed_img_np, allowlist="0123456789")
+        # FIX: Removed allowlist so EasyOCR can capture text-distorted shapes like '!' or 'l'
+        results = reader.readtext(processed_img_np)
         
         # --- SPATIAL & CONTENT FILTERING ENGINE ---
         y_centers = []
@@ -119,7 +115,6 @@ if uploaded_file is not None:
         for (bbox, text, confidence) in results:
             # 1. Map common visual OCR typos for the number '1' before stripping symbols
             corrected_text = text.strip()
-            # Replace common characters that look like a mechanical '1'
             for char in ['!', 'I', 'l', '|', '[', ']', 'i']:
                 corrected_text = corrected_text.replace(char, '1')
             
@@ -130,7 +125,7 @@ if uploaded_file is not None:
             if clean_text in ["1", "10", "102", "103", "104", "105", "106"]:
                 continue
                 
-            if clean_text and confidence > 0.15: # Slightly relaxed confidence to capture the corrected '1'
+            if clean_text and confidence > 0.15: 
                 y_coords = [point[1] for point in bbox]
                 y_center = sum(y_coords) / 4.0
                 y_centers.append(y_center)
@@ -197,5 +192,3 @@ if uploaded_file is not None:
                 st.warning(f"⚠️ **High Tariff Bracket Alert!** Trend puts you into EDL Tier 3.")
             else:
                 st.success("🎉 **Safe Zone:** Lower subsidized EDL pricing tiers.")
-
-
